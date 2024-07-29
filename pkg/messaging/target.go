@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"fmt"
+	"github.com/flowbehappy/tigate/rpc"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,7 +16,6 @@ import (
 	. "github.com/flowbehappy/tigate/pkg/apperror"
 	"github.com/flowbehappy/tigate/pkg/config"
 	"github.com/flowbehappy/tigate/pkg/messaging/proto"
-	"github.com/flowbehappy/tigate/utils/conn"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/security"
@@ -225,7 +225,7 @@ func (s *remoteMessageTarget) connect() {
 	if s.conn != nil {
 		return
 	}
-	conn, err := conn.Connect(string(s.targetAddr), &security.Credential{})
+	conn, err := rpc.Connect(string(s.targetAddr), &security.Credential{})
 	if err != nil {
 		log.Info("Cannot create grpc client",
 			zap.Any("messageCenterID", s.messageCenterID), zap.Any("remote", s.targetId), zap.Error(err))
