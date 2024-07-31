@@ -11,21 +11,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sink
+package heartbeatpb
 
-import "github.com/prometheus/client_golang/prometheus"
+import "math"
 
-var (
-	// Metrics is the metrics collector related to dispatcher manager.
-	FlushRows = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: "tigate",
-			Subsystem: "sink",
-			Name:      "flush_rows",
-			Help:      "The number of rows flushed to downstream.",
-		}, []string{"changefeed"})
-)
+func (w *Watermark) UpdateMin(other Watermark) {
+	if w.CheckpointTs > other.CheckpointTs {
+		w.CheckpointTs = other.CheckpointTs
+	}
+	if w.ResolvedTs > other.ResolvedTs {
+		w.ResolvedTs = other.ResolvedTs
+	}
+}
 
-func InitMetrics(registry *prometheus.Registry) {
-	registry.MustRegister(FlushRows)
+func NewMaxWatermark() *Watermark {
+	return &Watermark{
+		CheckpointTs: math.MaxUint64,
+		ResolvedTs:   math.MaxUint64,
+	}
 }

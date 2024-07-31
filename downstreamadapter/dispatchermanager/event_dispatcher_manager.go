@@ -15,7 +15,6 @@ package dispatchermanager
 
 import (
 	"context"
-	"math"
 	"sync"
 	"time"
 
@@ -31,6 +30,7 @@ import (
 	"github.com/flowbehappy/tigate/pkg/common"
 	appcontext "github.com/flowbehappy/tigate/pkg/common/context"
 	"github.com/flowbehappy/tigate/pkg/messaging"
+	"github.com/flowbehappy/tigate/pkg/metrics"
 	"github.com/pingcap/tiflow/cdc/model"
 	"go.uber.org/zap"
 )
@@ -68,6 +68,9 @@ type EventDispatcherManager struct {
 
 	tableEventDispatcherCount prometheus.Gauge
 	//filter                      *Filter
+	metricCreateDispatcherDuration prometheus.Observer
+	metricCheckpointTs             prometheus.Gauge
+	metricResolveTs                prometheus.Gauge
 }
 
 // TODO:这个锁会在量级大于几万以后影响明显，10w 的 dispatcher同时创建需要预估10多分钟的开销。
@@ -116,6 +119,17 @@ func (d *DispatcherMap) ForEach(fn func(tableSpan *common.TableSpan, dispatcher 
 	})
 }
 
+func (d *DispatcherMap) GetAllDispatchers() []*dispatcher.TableEventDispatcher {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	var dispatchers []*dispatcher.TableEventDispatcher
+	d.dispatchers.Ascend(func(tableSpan *common.TableSpan, dispatcherItem *dispatcher.TableEventDispatcher) bool {
+		dispatchers = append(dispatchers, dispatcherItem)
+		return true
+	})
+	return dispatchers
+}
+
 func NewEventDispatcherManager(changefeedID model.ChangeFeedID, config *model.ChangefeedConfig, clusterID messaging.ServerId, maintainerID messaging.ServerId) *EventDispatcherManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	eventDispatcherManager := &EventDispatcherManager{
@@ -126,11 +140,14 @@ func NewEventDispatcherManager(changefeedID model.ChangeFeedID, config *model.Ch
 		// sinkURI: config.SinkURI,
 		//sinkConfig:             config.SinkConfig,
 		//enableSyncPoint:       false,
-		maintainerID:              maintainerID,
-		tableSpanStatusesChan:     make(chan *heartbeatpb.TableSpanStatus, 1000000),
-		cancel:                    cancel,
-		config:                    config,
-		tableEventDispatcherCount: TableEventDispatcherCount.WithLabelValues(changefeedID.String()),
+		maintainerID:                   maintainerID,
+		tableSpanStatusesChan:          make(chan *heartbeatpb.TableSpanStatus, 1000000),
+		cancel:                         cancel,
+		config:                         config,
+		tableEventDispatcherCount:      TableEventDispatcherCount.WithLabelValues(changefeedID.String()),
+		metricCreateDispatcherDuration: metrics.CreateDispatcherDuration.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
+		metricCheckpointTs:             metrics.EventDispatcherManagerCheckpointTsGauge.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
+		metricResolveTs:                metrics.EventDispatcherManagerResolvedTsGauge.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
 	}
 
 	appcontext.GetService[*HeartBeatCollector](appcontext.HeartbeatCollector).RegisterEventDispatcherManager(eventDispatcherManager)
@@ -198,6 +215,7 @@ func calculateStartSyncPointTs(startTs uint64, syncPointInterval time.Duration) 
 
 // 收到 rpc 请求创建，需要通过 event dispatcher manager 来
 func (e *EventDispatcherManager) NewTableEventDispatcher(tableSpan *common.TableSpan, startTs uint64) *dispatcher.TableEventDispatcher {
+	start := time.Now()
 	// 创建新的 event dispatcher，同时需要把这个去 logService 注册，并且把自己加到对应的某个处理 thread 里
 	// if e.dispatcherMap.Len() == 0 {
 	// 	err := e.Init(startTs)
@@ -208,7 +226,7 @@ func (e *EventDispatcherManager) NewTableEventDispatcher(tableSpan *common.Table
 	// }
 
 	if _, ok := e.dispatcherMap.Get(tableSpan); ok {
-		//log.Warn("table span already exists", zap.Any("tableSpan", tableSpan))
+		log.Debug("table span already exists", zap.Any("tableSpan", tableSpan))
 		return nil
 	}
 
@@ -233,7 +251,9 @@ func (e *EventDispatcherManager) NewTableEventDispatcher(tableSpan *common.Table
 	}
 
 	e.tableEventDispatcherCount.Inc()
-	log.Info("new table event dispatcher created", zap.Any("tableSpan", tableSpan))
+	log.Info("new table event dispatcher created", zap.Any("tableSpan", tableSpan),
+		zap.Int64("cost(ns)", time.Since(start).Nanoseconds()), zap.Time("start", start))
+	e.metricCreateDispatcherDuration.Observe(float64(time.Since(start).Seconds()))
 	return tableEventDispatcher
 }
 
@@ -271,9 +291,11 @@ func (e *EventDispatcherManager) CollectHeartbeatInfoWhenStatesChanged(ctx conte
 				}
 			}
 
-			message := e.CollectHeartbeatInfo(false)
+			var message heartbeatpb.HeartBeatRequest
+			message.ChangefeedID = e.changefeedID.ID
+			//message := e.CollectHeartbeatInfo(false)
 			message.Statuses = statusMessage
-			e.GetHeartbeatRequestQueue().Enqueue(&HeartBeatRequestWithTargetID{TargetID: e.GetMaintainerID(), Request: message})
+			e.GetHeartbeatRequestQueue().Enqueue(&HeartBeatRequestWithTargetID{TargetID: e.GetMaintainerID(), Request: &message})
 			statusMessage = statusMessage[:0]
 		}
 	}
@@ -343,12 +365,13 @@ func (e *EventDispatcherManager) CollectHeartbeatInfo(needCompleteStatus bool) *
 	message := heartbeatpb.HeartBeatRequest{
 		ChangefeedID:    e.changefeedID.ID,
 		CompeleteStatus: needCompleteStatus,
+		Watermark:       heartbeatpb.NewMaxWatermark(),
 	}
 
-	var minCheckpointTs uint64 = math.MaxUint64
-
 	toReomveTableSpans := make([]*common.TableSpan, 0)
-	e.dispatcherMap.ForEach(func(tableSpan *common.TableSpan, tableEventDispatcher *dispatcher.TableEventDispatcher) {
+	allDispatchers := e.dispatcherMap.GetAllDispatchers()
+	// e.dispatcherMap.ForEach(func(tableSpan *common.TableSpan, tableEventDispatcher *dispatcher.TableEventDispatcher) {
+	for _, tableEventDispatcher := range allDispatchers {
 		// If the dispatcher is in removing state, we need to check if it's closed successfully.
 		// If it's closed successfully, we could clean it up.
 		// TODO: we need to consider how to deal with the checkpointTs of the removed dispatcher if the message will be discarded.
@@ -356,25 +379,20 @@ func (e *EventDispatcherManager) CollectHeartbeatInfo(needCompleteStatus bool) *
 
 		componentStatus := dispatcherHeartBeatInfo.ComponentStatus
 		if componentStatus == heartbeatpb.ComponentState_Stopping {
-			checkpointTs, ok := tableEventDispatcher.TryClose()
+			watermark, ok := tableEventDispatcher.TryClose()
 			if ok {
 				// remove successfully
-				if minCheckpointTs > checkpointTs {
-					minCheckpointTs = checkpointTs
-				}
+				message.Watermark.UpdateMin(watermark)
 				// If the dispatcher is removed successfully, we need to add the tableSpan into message whether needCompleteStatus is true or not.
 				message.Statuses = append(message.Statuses, &heartbeatpb.TableSpanStatus{
 					Span:            dispatcherHeartBeatInfo.TableSpan.TableSpan,
 					ComponentStatus: heartbeatpb.ComponentState_Stopped,
 				})
-				toReomveTableSpans = append(toReomveTableSpans, tableSpan)
-				return
+				toReomveTableSpans = append(toReomveTableSpans, tableEventDispatcher.GetTableSpan())
 			}
 		}
 
-		if minCheckpointTs > dispatcherHeartBeatInfo.CheckpointTs {
-			minCheckpointTs = dispatcherHeartBeatInfo.CheckpointTs
-		}
+		message.Watermark.UpdateMin(dispatcherHeartBeatInfo.Watermark)
 
 		if needCompleteStatus {
 			message.Statuses = append(message.Statuses, &heartbeatpb.TableSpanStatus{
@@ -382,13 +400,14 @@ func (e *EventDispatcherManager) CollectHeartbeatInfo(needCompleteStatus bool) *
 				ComponentStatus: dispatcherHeartBeatInfo.ComponentStatus,
 			})
 		}
-	})
+	}
 
 	for _, tableSpan := range toReomveTableSpans {
 		e.cleanTableEventDispatcher(tableSpan)
 	}
 
-	message.CheckpointTs = minCheckpointTs
+	e.metricCheckpointTs.Set(float64(message.Watermark.CheckpointTs))
+	e.metricResolveTs.Set(float64(message.Watermark.ResolvedTs))
 	return &message
 }
 

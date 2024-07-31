@@ -92,6 +92,8 @@ type MysqlConfig struct {
 	BatchDMLEnable  bool
 	MultiStmtEnable bool
 	CachePrepStmts  bool
+	// DryRun is used to enable dry-run mode. In dry-run mode, the writer will not write data to the downstream.
+	DryRun bool
 }
 
 // NewConfig returns the default mysql backend config.
@@ -123,6 +125,7 @@ func (c *MysqlConfig) Apply(sinkURI *url.URL) error {
 }
 
 func NewMysqlConfigAndDB(sinkURI string) (*MysqlConfig, *sql.DB, error) {
+	log.Info("fizz create db connection", zap.String("sinkURI", sinkURI))
 	// create db connection
 	sinkURIParsed, err := url.Parse(sinkURI)
 	if err != nil {

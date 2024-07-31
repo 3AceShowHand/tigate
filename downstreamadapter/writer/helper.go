@@ -89,6 +89,13 @@ func GenBasicDSN(cfg *MysqlConfig) (*dmysql.Config, error) {
 		port = "4000"
 	}
 
+	dryRun := cfg.sinkURI.Query().Get("dry-run")
+	log.Info("fizz uri", zap.Any("sinkURI", cfg.sinkURI.String()))
+	if dryRun == "true" {
+		log.Info("dry-run mode is enabled, will not write data to downstream")
+		cfg.DryRun = true
+	}
+
 	// This will handle the IPv6 address format.
 	var dsn *dmysql.Config
 	var err error

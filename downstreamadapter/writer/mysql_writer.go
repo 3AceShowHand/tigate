@@ -21,9 +21,11 @@ import (
 	"time"
 
 	"github.com/flowbehappy/tigate/pkg/common"
+	"github.com/flowbehappy/tigate/pkg/metrics"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
 	timodel "github.com/pingcap/tidb/pkg/parser/model"
+	"github.com/pingcap/tiflow/cdc/model"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/errorutil"
 	"github.com/pingcap/tiflow/pkg/quotes"
@@ -38,14 +40,17 @@ const (
 
 // 用于给 mysql 类型的下游做 flush, 主打一个粗糙，先能跑起来再说
 type MysqlWriter struct {
-	db  *sql.DB
-	cfg *MysqlConfig
+	db         *sql.DB
+	cfg        *MysqlConfig
+	statistics *metrics.Statistics
 }
 
-func NewMysqlWriter(db *sql.DB, cfg *MysqlConfig) *MysqlWriter {
+func NewMysqlWriter(db *sql.DB, cfg *MysqlConfig, changefeedID model.ChangeFeedID) *MysqlWriter {
+	statistics := metrics.NewStatistics(changefeedID, "TxnSink")
 	return &MysqlWriter{
-		db:  db,
-		cfg: cfg,
+		db:         db,
+		cfg:        cfg,
+		statistics: statistics,
 	}
 }
 
@@ -102,6 +107,11 @@ func (w *MysqlWriter) asyncExecAddIndexDDLIfTimeout(event *common.TxnEvent) erro
 }
 
 func (w *MysqlWriter) execDDL(event *common.TxnEvent) error {
+	if w.cfg.DryRun {
+		log.Info("Dry run DDL", zap.String("sql", event.GetDDLQuery()))
+		return nil
+	}
+
 	shouldSwitchDB := needSwitchDB(event)
 
 	ctx := context.Background()
@@ -162,10 +172,19 @@ func (w *MysqlWriter) Flush(events []*common.TxnEvent, workerNum int) error {
 	if dmls.rowCount == 0 {
 		return nil
 	}
-	if err := w.execDMLWithMaxRetries(dmls); err != nil {
-		log.Error("execute DMLs failed", zap.Error(err))
-		return errors.Trace(err)
+
+	if !w.cfg.DryRun {
+		if err := w.execDMLWithMaxRetries(dmls); err != nil {
+			log.Error("execute DMLs failed", zap.Error(err))
+			return errors.Trace(err)
+		}
+	} else {
+		// dry run mode, just record the metrics
+		w.statistics.RecordBatchExecution(func() (int, int64, error) {
+			return dmls.rowCount, 0, nil
+		})
 	}
+
 	for _, event := range events {
 		if event.PostTxnFlushed != nil {
 			event.PostTxnFlushed()
@@ -255,21 +274,19 @@ func (w *MysqlWriter) prepareDMLs(events []*common.TxnEvent) *preparedDMLs {
 }
 
 func (w *MysqlWriter) execDMLWithMaxRetries(dmls *preparedDMLs) error {
+
 	if len(dmls.sqls) != len(dmls.values) {
 		log.Error("unexpected number of sqls and values",
 			zap.Strings("sqls", dmls.sqls),
 			zap.Any("values", dmls.values))
 		return cerror.ErrUnexpected.FastGenByArgs("unexpected number of sqls and values")
 	}
-
 	ctx := context.Background()
-	// approximateSize is multiplied by 2 because in extreme circustumas, every
-	// byte in dmls can be escaped and adds one byte.
-	return retry.Do(ctx, func() error {
+	tryExec := func() (int, int64, error) {
 		tx, err := w.db.BeginTx(ctx, nil)
 		if err != nil {
 			log.Error("BeginTx", zap.Error(err))
-			return err
+			return 0, 0, err
 		}
 
 		// Set session variables first and then execute the transaction.
@@ -282,31 +299,26 @@ func (w *MysqlWriter) execDMLWithMaxRetries(dmls *preparedDMLs) error {
 					log.Warn("failed to rollback txn", zap.Error(rbErr))
 				}
 			}
-			return err
+			return 0, 0, err
 		}
 
-		// If interplated SQL size exceeds maxAllowedPacket, mysql driver will
-		// fall back to the sequantial way.
-		// error can be ErrPrepareMulti, ErrBadConn etc.
-		// TODO: add a quick path to check whether we should fallback to
-		// the sequence way.
-		// if s.cfg.MultiStmtEnable && !fallbackToSeqWay {
-		// 	err = s.multiStmtExecute(pctx, dmls, tx, writeTimeout)
-		// 	if err != nil {
-		// 		fallbackToSeqWay = true
-		// 		return 0, 0, err
-		// 	}
-		// } else {
-		// err = w.sequenceExecute(ctx, dmls, tx, 20*time.Second)
 		err = w.multiStmtExecute(ctx, dmls, tx, 20*time.Second)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 
 		if err = tx.Commit(); err != nil {
-			return err
+			return 0, 0, err
 		}
 		log.Debug("Exec Rows succeeded")
+		return dmls.rowCount, 0, nil
+	}
+	return retry.Do(ctx, func() error {
+		err := w.statistics.RecordBatchExecution(tryExec)
+		if err != nil {
+			log.Error("RecordBatchExecution", zap.Error(err))
+			return err
+		}
 		return nil
 	}, retry.WithBackoffBaseDelay(pmysql.BackoffBaseDelay.Milliseconds()),
 		retry.WithBackoffMaxDelay(pmysql.BackoffMaxDelay.Milliseconds()),

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/stretchr/testify/require"
 	"github.com/zeebo/assert"
 
@@ -23,7 +24,7 @@ func TestPrepareDMLs(t *testing.T) {
 	defer db.Close()
 
 	cfg := &MysqlConfig{}
-	writer := NewMysqlWriter(db, cfg)
+	writer := NewMysqlWriter(db, cfg, model.ChangeFeedID4Test("test", "test"))
 
 	tests := []struct {
 		name     string
@@ -146,7 +147,7 @@ func TestMysqlWriter_Flush(t *testing.T) {
 		SafeMode: false,
 	}
 
-	writer := NewMysqlWriter(db, cfg)
+	writer := NewMysqlWriter(db, cfg, model.ChangeFeedID4Test("test", "test"))
 
 	events := []*common.TxnEvent{
 		{
@@ -175,7 +176,7 @@ func TestMysqlWriter_Flush(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	err := writer.Flush(events)
+	err := writer.Flush(events, 0)
 	require.NoError(t, err)
 
 	err = mock.ExpectationsWereMet()
@@ -190,11 +191,11 @@ func TestMysqlWriter_Flush_EmptyEvents(t *testing.T) {
 		SafeMode: false,
 	}
 
-	writer := NewMysqlWriter(db, cfg)
+	writer := NewMysqlWriter(db, cfg, model.ChangeFeedID4Test("test", "test"))
 
 	events := []*common.TxnEvent{}
 
-	err := writer.Flush(events)
+	err := writer.Flush(events, 0)
 	require.NoError(t, err)
 
 	err = mock.ExpectationsWereMet()
