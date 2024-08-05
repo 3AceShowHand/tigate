@@ -80,7 +80,7 @@ type EventCollector struct {
 	registerMessageChan *chann.DrainableChann[*RegisterInfo] // for temp
 }
 
-func NewEventCollector(globalMemoryQuota int64, serverId messaging.ServerId) *EventCollector {
+func NewEventCollector(ctx context.Context, globalMemoryQuota int64, serverId messaging.ServerId) *EventCollector {
 	eventCollector := EventCollector{
 		serverId:            serverId,
 		globalMemoryQuota:   globalMemoryQuota,
@@ -91,12 +91,18 @@ func NewEventCollector(globalMemoryQuota int64, serverId messaging.ServerId) *Ev
 
 	eventCollector.wg.Add(1)
 	go func(c *EventCollector) {
+		var registerInfo *RegisterInfo
 		defer eventCollector.wg.Done()
 		for {
-			registerInfo := <-eventCollector.registerMessageChan.Out()
+			select {
+			case <-ctx.Done():
+				return
+			case registerInfo = <-eventCollector.registerMessageChan.Out():
+			}
+
 			d := registerInfo.dispatcher
 			startTs := registerInfo.startTs
-			err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendEvent(&messaging.TargetMessage{
+			m := &messaging.TargetMessage{
 				To:    c.serverId, // demo 中 每个节点都有自己的 eventService
 				Topic: messaging.EventServiceTopic,
 				Type:  messaging.TypeRegisterDispatcherRequest,
@@ -107,12 +113,18 @@ func NewEventCollector(globalMemoryQuota int64, serverId messaging.ServerId) *Ev
 					StartTs:      startTs,
 					ServerId:     c.serverId.String(),
 				}},
-			})
+			}
+			err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendEvent(m)
 			if err != nil {
 				log.Error("failed to send register dispatcher request message", zap.Error(err))
-				c.registerMessageChan.In() <- &RegisterInfo{
+				info := &RegisterInfo{
 					dispatcher: d,
 					startTs:    startTs,
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case c.registerMessageChan.In() <- info:
 				}
 			}
 			time.Sleep(10 * time.Millisecond) // for test
