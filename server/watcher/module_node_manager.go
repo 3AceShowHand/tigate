@@ -73,7 +73,7 @@ func (c *NodeManager) Tick(ctx context.Context,
 		for _, capture := range c.nodes {
 			if _, exist := state.Captures[capture.ID]; !exist {
 				sid := messaging.ServerId(capture.ID)
-				appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).RemoveTarget(sid)
+				appcontext.GetMessageCenter().RemoveTarget(sid)
 				removed = append(removed, capture)
 			}
 		}
@@ -82,7 +82,7 @@ func (c *NodeManager) Tick(ctx context.Context,
 			if _, exist := c.nodes[capture.ID]; !exist {
 
 				sid := messaging.ServerId(capture.ID)
-				appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).AddTarget(sid, TempEpoch, common.AddressType(capture.AdvertiseAddr))
+				appcontext.GetMessageCenter().AddTarget(sid, TempEpoch, common.AddressType(capture.AdvertiseAddr))
 				newCaptures = append(newCaptures, capture)
 			}
 			allCaptures[capture.ID] = capture

@@ -71,7 +71,7 @@ func NewCoordinator(capture *model.CaptureInfo, version int64) server.Coordinato
 	)
 
 	// receive messages
-	appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).
+	appcontext.GetMessageCenter().
 		RegisterHandler(messaging.CoordinatorTopic, func(_ context.Context, msg *messaging.TargetMessage) error {
 			c.msgLock.Lock()
 			c.msgBuf = append(c.msgBuf, msg)
@@ -172,7 +172,7 @@ func (c *coordinator) AsyncStop() {
 
 func (c *coordinator) sendMessages(msgs []rpc.Message) {
 	for _, msg := range msgs {
-		err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendCommand(msg.(*messaging.TargetMessage))
+		err := appcontext.GetMessageCenter().SendCommand(msg.(*messaging.TargetMessage))
 		if err != nil {
 			log.Error("failed to send coordinator request", zap.Any("msg", msg), zap.Error(err))
 			continue

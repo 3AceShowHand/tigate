@@ -1,6 +1,7 @@
 package context
 
 import (
+	"github.com/flowbehappy/tigate/pkg/messaging"
 	"sync"
 )
 
@@ -21,6 +22,8 @@ const (
 type AppContext struct {
 	// TODO
 	serviceMap sync.Map
+
+	mc messaging.MessageCenter
 }
 
 func GetGlobalContext() *AppContext {
@@ -36,4 +39,8 @@ func SetService[T any](name string, t T) { GetGlobalContext().serviceMap.Store(n
 func GetService[T any](name string) T {
 	v, _ := GetGlobalContext().serviceMap.Load(name)
 	return v.(T)
+}
+
+func GetMessageCenter() messaging.MessageCenter {
+	return GetGlobalContext().mc
 }

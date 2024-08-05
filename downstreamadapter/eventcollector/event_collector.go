@@ -87,7 +87,7 @@ func NewEventCollector(ctx context.Context, globalMemoryQuota int64, serverId me
 		dispatcherMap:       newDispatcherMap(),
 		registerMessageChan: chann.NewAutoDrainChann[*RegisterInfo](),
 	}
-	appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).RegisterHandler(messaging.EventFeedTopic, eventCollector.RecvEventsMessage)
+	appcontext.GetMessageCenter().RegisterHandler(messaging.EventFeedTopic, eventCollector.RecvEventsMessage)
 
 	eventCollector.wg.Add(1)
 	go func(c *EventCollector) {
@@ -114,7 +114,7 @@ func NewEventCollector(ctx context.Context, globalMemoryQuota int64, serverId me
 					ServerId:     c.serverId.String(),
 				}},
 			}
-			err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendEvent(m)
+			err := appcontext.GetMessageCenter().SendEvent(m)
 			if err != nil {
 				log.Error("failed to send register dispatcher request message", zap.Error(err))
 				info := &RegisterInfo{
@@ -135,7 +135,7 @@ func NewEventCollector(ctx context.Context, globalMemoryQuota int64, serverId me
 }
 
 func (c *EventCollector) RegisterDispatcher(d dispatcher.Dispatcher, startTs uint64) error {
-	err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendEvent(&messaging.TargetMessage{
+	err := appcontext.GetMessageCenter().SendEvent(&messaging.TargetMessage{
 		To:    c.serverId, // demo 中 每个节点都有自己的 eventService
 		Topic: messaging.EventServiceTopic,
 		Type:  messaging.TypeRegisterDispatcherRequest,
@@ -160,7 +160,7 @@ func (c *EventCollector) RegisterDispatcher(d dispatcher.Dispatcher, startTs uin
 }
 
 func (c *EventCollector) RemoveDispatcher(d dispatcher.Dispatcher) error {
-	err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendEvent(&messaging.TargetMessage{
+	err := appcontext.GetMessageCenter().SendEvent(&messaging.TargetMessage{
 		To:    c.serverId,
 		Topic: messaging.EventServiceTopic,
 		Type:  messaging.TypeRegisterDispatcherRequest,

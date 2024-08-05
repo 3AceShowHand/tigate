@@ -42,7 +42,7 @@ func NewFakeMaintainerManager() *FakeDispatcherManagerManager {
 	m := &FakeDispatcherManagerManager{
 		dispatcherManagers: make(map[model.ChangeFeedID]*DispatcherManager),
 	}
-	appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).RegisterHandler(messaging.MaintainerBoostrapRequestTopic,
+	appcontext.GetMessageCenter().RegisterHandler(messaging.MaintainerBoostrapRequestTopic,
 		func(_ context.Context, msg *messaging.TargetMessage) error {
 			m.msgLock.Lock()
 			m.msgBuf = append(m.msgBuf, msg)
@@ -94,7 +94,7 @@ func (m *FakeDispatcherManagerManager) Run(ctx context.Context) error {
 						})
 						return true
 					})
-					err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendCommand(messaging.NewTargetMessage(
+					err := appcontext.GetMessageCenter().SendCommand(messaging.NewTargetMessage(
 						manager.maintainerID,
 						common.TopicType("maintainer/"+manager.id.ID),
 						response,
@@ -123,7 +123,7 @@ func (m *FakeDispatcherManagerManager) Run(ctx context.Context) error {
 					}
 					absentSpan := manager.handleDispatchTableSpanRequest(req)
 					if absentSpan != nil {
-						err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendCommand(messaging.NewTargetMessage(
+						err := appcontext.GetMessageCenter().SendCommand(messaging.NewTargetMessage(
 							manager.maintainerID,
 							common.TopicType("maintainer/"+manager.id.ID),
 							&heartbeatpb.HeartBeatResponse{
@@ -166,7 +166,7 @@ func (m *FakeDispatcherManagerManager) Run(ctx context.Context) error {
 						return true
 					})
 					if len(response.Statuses) != 0 {
-						err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendCommand(messaging.NewTargetMessage(
+						err := appcontext.GetMessageCenter().SendCommand(messaging.NewTargetMessage(
 							manager.maintainerID,
 							common.TopicType("maintainer/"+manager.id.ID),
 							response,

@@ -56,7 +56,7 @@ func NewHeartBeatCollector(serverId messaging.ServerId) *HeartBeatCollector {
 		dispatcherRequestCh:       make([]chan *heartbeatpb.ScheduleDispatcherRequest, createDispatcherConcurrency),
 	}
 	//context.GetService[messaging.MessageCenter](context.MessageCenter).RegisterHandler(heartbeatResponseTopic, heartBeatCollector.RecvHeartBeatResponseMessages)
-	appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).
+	appcontext.GetMessageCenter().
 		RegisterHandler(messaging.SchedulerDispatcherTopic, heartBeatCollector.RecvSchedulerDispatcherRequestMessages)
 	heartBeatCollector.wg.Add(1)
 	go heartBeatCollector.SendHeartBeatMessages()
@@ -98,7 +98,7 @@ func (c *HeartBeatCollector) RegisterEventDispatcherManager(m *EventDispatcherMa
 func (c *HeartBeatCollector) SendHeartBeatMessages() {
 	for {
 		heartBeatRequestWithTargetID := c.requestQueue.Dequeue()
-		err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendEvent(&messaging.TargetMessage{
+		err := appcontext.GetMessageCenter().SendEvent(&messaging.TargetMessage{
 			To:      heartBeatRequestWithTargetID.TargetID,
 			Topic:   messaging.DispatcherHeartBeatRequestTopic,
 			Type:    messaging.TypeHeartBeatRequest,

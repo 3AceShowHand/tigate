@@ -37,7 +37,7 @@ func NewDispatcherManagerManager() *DispatcherManagerManager {
 	m := &DispatcherManagerManager{
 		dispatcherManagers: make(map[model.ChangeFeedID]*dispatchermanager.EventDispatcherManager),
 	}
-	appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).
+	appcontext.GetMessageCenter().
 		RegisterHandler(messaging.MaintainerBoostrapRequestTopic, m.RecvMaintainerBootstrapRequest)
 	return m
 }
@@ -66,7 +66,7 @@ func (m *DispatcherManagerManager) RecvMaintainerBootstrapRequest(ctx context.Co
 			Statuses:     make([]*heartbeatpb.TableSpanStatus, 0),
 		}
 
-		err = appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendCommand(messaging.NewTargetMessage(
+		err = appcontext.GetMessageCenter().SendCommand(messaging.NewTargetMessage(
 			msg.From,
 			messaging.MaintainerBootstrapResponseTopic,
 			response,
@@ -92,7 +92,7 @@ func (m *DispatcherManagerManager) RecvMaintainerBootstrapRequest(ctx context.Co
 			CheckpointTs:    0,
 		})
 	})
-	err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendCommand(messaging.NewTargetMessage(
+	err := appcontext.GetMessageCenter().SendCommand(messaging.NewTargetMessage(
 		msg.From,
 		messaging.MaintainerBootstrapResponseTopic,
 		response,

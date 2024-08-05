@@ -50,7 +50,7 @@ type eventService struct {
 }
 
 func NewEventService() EventService {
-	mc := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter)
+	mc := appcontext.GetMessageCenter()
 	eventStore := appcontext.GetService[eventstore.EventStore](appcontext.EventStore)
 
 	es := &eventService{

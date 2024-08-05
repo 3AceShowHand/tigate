@@ -32,7 +32,7 @@ func NewGrpcServer(lis net.Listener) *GrpcModule {
 		grpc.MaxRecvMsgSize(256 * 1024 * 1024), // 256MB
 	}
 	grpcServer := grpc.NewServer(option...)
-	proto.RegisterMessageCenterServer(grpcServer, messaging.NewMessageCenterServer(appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter)))
+	proto.RegisterMessageCenterServer(grpcServer, messaging.NewMessageCenterServer(appcontext.GetMessageCenter()))
 	return &GrpcModule{
 		grpcServer: grpcServer,
 		lis:        lis,

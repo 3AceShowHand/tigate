@@ -111,7 +111,7 @@ func NewMaintainer(cfID model.ChangeFeedID,
 ) *Maintainer {
 	m := &Maintainer{
 		id:              cfID,
-		mc:              appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter),
+		mc:              appcontext.GetMessageCenter(),
 		state:           heartbeatpb.ComponentState_Prepared,
 		removed:         atomic.NewBool(false),
 		taskCh:          make(chan Task, 1024),

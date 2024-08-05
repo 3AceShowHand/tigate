@@ -51,7 +51,7 @@ type Manager struct {
 // 2. manager manages maintainer lifetime
 // 3. manager report maintainer status to coordinator
 func NewMaintainerManager(selfServerID messaging.ServerId, pdEndpoints []string) *Manager {
-	mc := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter)
+	mc := appcontext.GetMessageCenter()
 	m := &Manager{
 		mc:           mc,
 		maintainers:  sync.Map{},
@@ -152,7 +152,7 @@ func (m *Manager) onCoordinatorBootstrapRequest(msg *messaging.TargetMessage) {
 		return true
 	})
 
-	err := appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).SendCommand(messaging.NewTargetMessage(
+	err := appcontext.GetMessageCenter().SendCommand(messaging.NewTargetMessage(
 		m.coordinatorID,
 		messaging.CoordinatorTopic,
 		response,
