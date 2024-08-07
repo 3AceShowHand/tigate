@@ -25,7 +25,6 @@ import (
 	"github.com/flowbehappy/tigate/pkg/common"
 	appcontext "github.com/flowbehappy/tigate/pkg/common/context"
 	"github.com/flowbehappy/tigate/pkg/messaging"
-	"github.com/google/uuid"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/pkg/chann"
 	"go.uber.org/zap"
@@ -33,29 +32,29 @@ import (
 
 type DispatcherMap struct {
 	mutex sync.Mutex
-	m     map[common.DispatcherID]dispatcher.Dispatcher // dispatcher_id --> dispatcher
+	m     map[string]dispatcher.Dispatcher // dispatcher_id --> dispatcher
 }
 
 func newDispatcherMap() *DispatcherMap {
 	return &DispatcherMap{
-		m: make(map[common.DispatcherID]dispatcher.Dispatcher),
+		m: make(map[string]dispatcher.Dispatcher),
 	}
 }
 
-func (m *DispatcherMap) Get(dispatcherId common.DispatcherID) (dispatcher.Dispatcher, bool) {
+func (m *DispatcherMap) Get(dispatcherId string) (dispatcher.Dispatcher, bool) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	d, ok := m.m[dispatcherId]
 	return d, ok
 }
 
-func (m *DispatcherMap) Set(dispatcherId common.DispatcherID, d dispatcher.Dispatcher) {
+func (m *DispatcherMap) Set(dispatcherId string, d dispatcher.Dispatcher) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.m[dispatcherId] = d
 }
 
-func (m *DispatcherMap) Delete(dispatcherId common.DispatcherID) {
+func (m *DispatcherMap) Delete(dispatcherId string) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	delete(m.m, dispatcherId)
@@ -107,7 +106,7 @@ func NewEventCollector(ctx context.Context, globalMemoryQuota int64, serverId me
 				Topic: messaging.EventServiceTopic,
 				Type:  messaging.TypeRegisterDispatcherRequest,
 				Message: messaging.RegisterDispatcherRequest{RegisterDispatcherRequest: &eventpb.RegisterDispatcherRequest{
-					DispatcherId: uuid.UUID(d.GetId()).String(),
+					DispatcherId: d.GetId(),
 					TableSpan:    d.GetTableSpan().TableSpan,
 					Remove:       false,
 					StartTs:      startTs,
@@ -140,7 +139,7 @@ func (c *EventCollector) RegisterDispatcher(d dispatcher.Dispatcher, startTs uin
 		Topic: messaging.EventServiceTopic,
 		Type:  messaging.TypeRegisterDispatcherRequest,
 		Message: messaging.RegisterDispatcherRequest{RegisterDispatcherRequest: &eventpb.RegisterDispatcherRequest{
-			DispatcherId: uuid.UUID(d.GetId()).String(),
+			DispatcherId: d.GetId(),
 			TableSpan:    d.GetTableSpan().TableSpan,
 			Remove:       false,
 			StartTs:      startTs,
@@ -165,7 +164,7 @@ func (c *EventCollector) RemoveDispatcher(d dispatcher.Dispatcher) error {
 		Topic: messaging.EventServiceTopic,
 		Type:  messaging.TypeRegisterDispatcherRequest,
 		Message: messaging.RegisterDispatcherRequest{RegisterDispatcherRequest: &eventpb.RegisterDispatcherRequest{
-			DispatcherId: uuid.UUID(d.GetId()).String(),
+			DispatcherId: d.GetId(),
 			Remove:       true,
 			ServerId:     c.serverId.String(),
 			TableSpan:    d.GetTableSpan().TableSpan,
@@ -176,7 +175,7 @@ func (c *EventCollector) RemoveDispatcher(d dispatcher.Dispatcher) error {
 		log.Error("failed to send register dispatcher request message", zap.Error(err))
 		return err
 	}
-	c.dispatcherMap.Delete(common.DispatcherID(d.GetId()))
+	c.dispatcherMap.Delete(string(d.GetId()))
 	return nil
 }
 
@@ -203,7 +202,7 @@ func (c *EventCollector) RecvEventsMessage(ctx context.Context, msg *messaging.T
 	// 	log.Info("Recv TxnEvent", zap.Any("dispatcherID", dispatcherID), zap.Any("event info", rowEvent.CommitTs), zap.Any("table name", rowEvent.TableInfo.TableName))
 	// }
 
-	if dispatcherItem, ok := c.dispatcherMap.Get(common.DispatcherID(uuid.MustParse(dispatcherID))); ok {
+	if dispatcherItem, ok := c.dispatcherMap.Get(dispatcherID); ok {
 		// check whether need to update speed ratio
 		//ok, ratio := dispatcherItem.GetMemoryUsage().UpdatedSpeedRatio(eventResponse.Ratio)
 		// if ok {
