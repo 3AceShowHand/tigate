@@ -132,10 +132,10 @@ func (p *LogPuller) Run(ctx context.Context) (err error) {
 
 	eg.Go(func() error { return p.runResolveLockChecker(ctx) })
 
-	log.Info("LogPuller starts",
-		zap.Int("workerConcurrent", len(p.inputChs)))
+	log.Info("log puller: start running",
+		zap.Int("workerConcurrency", len(p.inputChs)))
 	defer func() {
-		log.Info("LogPuller exits")
+		log.Info("log puller: existed")
 	}()
 	return eg.Wait()
 }
