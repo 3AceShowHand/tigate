@@ -70,8 +70,6 @@ type remoteMessageTarget struct {
 	recvCmdCh   chan *TargetMessage
 
 	wg *sync.WaitGroup
-	// ctx is used to create the grpc stream.
-	ctx context.Context
 	// cancel is used to stop the grpc stream, and the goroutine spawned by remoteMessageTarget.
 	cancel context.CancelFunc
 	// errCh is used to gather the error from the goroutine spawned by remoteMessageTarget.
@@ -96,13 +94,13 @@ func (s *remoteMessageTarget) Epoch() uint64 {
 	return s.targetEpoch.Load().(uint64)
 }
 
-func (s *remoteMessageTarget) sendEvent(msg ...*TargetMessage) error {
+func (s *remoteMessageTarget) sendEvent(ctx context.Context, msg ...*TargetMessage) error {
 	if !s.eventSender.ready.Load() {
 		s.connectionNotfoundErrorCounter.Inc()
 		return AppError{Type: ErrorTypeConnectionNotFound, Reason: "Stream has not been initialized"}
 	}
 	select {
-	case <-s.ctx.Done():
+	case <-ctx.Done():
 		s.connectionNotfoundErrorCounter.Inc()
 		return AppError{Type: ErrorTypeConnectionNotFound, Reason: "Stream has been closed"}
 	case s.sendEventCh <- s.newMessage(msg...):
@@ -114,13 +112,13 @@ func (s *remoteMessageTarget) sendEvent(msg ...*TargetMessage) error {
 	}
 }
 
-func (s *remoteMessageTarget) sendCommand(msg ...*TargetMessage) error {
+func (s *remoteMessageTarget) sendCommand(ctx context.Context, msg ...*TargetMessage) error {
 	if !s.commandSender.ready.Load() {
 		s.connectionNotfoundErrorCounter.Inc()
 		return AppError{Type: ErrorTypeConnectionNotFound, Reason: "Stream has not been initialized"}
 	}
 	select {
-	case <-s.ctx.Done():
+	case <-ctx.Done():
 		s.connectionNotfoundErrorCounter.Inc()
 		return AppError{Type: ErrorTypeConnectionNotFound, Reason: "Stream has been closed"}
 	case s.sendCmdCh <- s.newMessage(msg...):
@@ -133,6 +131,7 @@ func (s *remoteMessageTarget) sendCommand(msg ...*TargetMessage) error {
 }
 
 func newRemoteMessageTarget(
+	ctx context.Context,
 	localID, targetId node.ID,
 	localEpoch, targetEpoch uint64,
 	addr string,
@@ -140,7 +139,7 @@ func newRemoteMessageTarget(
 	cfg *config.MessageCenterConfig,
 ) *remoteMessageTarget {
 	log.Info("Create remote target", zap.Stringer("local", localID), zap.Stringer("remote", targetId), zap.Any("addr", addr), zap.Any("localEpoch", localEpoch), zap.Any("targetEpoch", targetEpoch))
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	rt := &remoteMessageTarget{
 		messageCenterID:    localID,
 		messageCenterEpoch: localEpoch,
@@ -148,7 +147,6 @@ func newRemoteMessageTarget(
 		targetId:           targetId,
 		eventSender:        &sendStreamWrapper{ready: atomic.Bool{}},
 		commandSender:      &sendStreamWrapper{ready: atomic.Bool{}},
-		ctx:                ctx,
 		cancel:             cancel,
 		sendEventCh:        make(chan *proto.Message, cfg.CacheChannelSize),
 		sendCmdCh:          make(chan *proto.Message, cfg.CacheChannelSize),
@@ -201,7 +199,7 @@ func (s *remoteMessageTarget) runHandleErr(ctx context.Context) {
 					log.Warn("received message from remote failed, will be reconnect",
 						zap.Any("messageCenterID", s.messageCenterID), zap.Any("remote", s.targetId), zap.Error(err))
 					time.Sleep(reconnectInterval)
-					s.resetConnect()
+					s.resetConnect(ctx)
 				default:
 					log.Error("Error in remoteMessageTarget, error:", zap.Error(err))
 				}
@@ -224,11 +222,11 @@ func (s *remoteMessageTarget) collectErr(err AppError) {
 	}
 }
 
-func (s *remoteMessageTarget) connect() {
+func (s *remoteMessageTarget) connect(ctx context.Context) {
 	if s.conn != nil {
 		return
 	}
-	conn, err := conn.Connect(string(s.targetAddr), &security.Credential{})
+	conn, err := conn.Connect(s.targetAddr, &security.Credential{})
 	if err != nil {
 		log.Info("Cannot create grpc client",
 			zap.Any("messageCenterID", s.messageCenterID), zap.Any("remote", s.targetId), zap.Error(err))
@@ -242,11 +240,11 @@ func (s *remoteMessageTarget) connect() {
 	handshake := &proto.Message{
 		From:  string(s.messageCenterID),
 		To:    string(s.targetId),
-		Epoch: uint64(s.messageCenterEpoch),
+		Epoch: s.messageCenterEpoch,
 		Type:  int32(TypeMessageHandShake),
 	}
 
-	eventStream, err := client.SendEvents(s.ctx, handshake)
+	eventStream, err := client.SendEvents(ctx, handshake)
 	if err != nil {
 		log.Info("Cannot establish event grpc stream",
 			zap.Any("messageCenterID", s.messageCenterID), zap.Stringer("remote", s.targetId), zap.Error(err))
@@ -256,7 +254,7 @@ func (s *remoteMessageTarget) connect() {
 		return
 	}
 
-	commandStream, err := client.SendCommands(s.ctx, handshake)
+	commandStream, err := client.SendCommands(ctx, handshake)
 	if err != nil {
 		log.Info("Cannot establish command grpc stream",
 			zap.Any("messageCenterID", s.messageCenterID), zap.Stringer("remote", s.targetId), zap.Error(err))
@@ -269,15 +267,15 @@ func (s *remoteMessageTarget) connect() {
 	s.conn = conn
 	s.eventRecvStream = eventStream
 	s.commandRecvStream = commandStream
-	s.runReceiveMessages(eventStream, s.recvEventCh)
-	s.runReceiveMessages(commandStream, s.recvCmdCh)
+	s.runReceiveMessages(ctx, eventStream, s.recvEventCh)
+	s.runReceiveMessages(ctx, commandStream, s.recvCmdCh)
 	log.Info("Connected to remote target",
 		zap.Any("messageCenterID", s.messageCenterID),
 		zap.Any("remote", s.targetId),
 		zap.Any("remoteAddr", s.targetAddr))
 }
 
-func (s *remoteMessageTarget) resetConnect() {
+func (s *remoteMessageTarget) resetConnect(ctx context.Context) {
 	log.Info("reconnect to remote target",
 		zap.Any("messageCenterID", s.messageCenterID),
 		zap.Any("remote", s.targetId))
@@ -299,23 +297,23 @@ LOOP:
 		}
 	}
 	// Reconnect
-	s.connect()
+	s.connect(ctx)
 }
 
-func (s *remoteMessageTarget) runEventSendStream(eventStream grpcSender) error {
+func (s *remoteMessageTarget) runEventSendStream(ctx context.Context, eventStream grpcSender) error {
 	s.eventSender.stream = eventStream
 	s.eventSender.ready.Store(true)
-	err := s.runSendMessages(s.ctx, s.eventSender.stream, s.sendEventCh)
+	err := s.runSendMessages(ctx, s.eventSender.stream, s.sendEventCh)
 	log.Info("Event send stream closed",
 		zap.Any("messageCenterID", s.messageCenterID), zap.Any("remote", s.targetId), zap.Error(err))
 	s.eventSender.ready.Store(false)
 	return err
 }
 
-func (s *remoteMessageTarget) runCommandSendStream(commandStream grpcSender) error {
+func (s *remoteMessageTarget) runCommandSendStream(ctx context.Context, commandStream grpcSender) error {
 	s.commandSender.stream = commandStream
 	s.commandSender.ready.Store(true)
-	err := s.runSendMessages(s.ctx, s.commandSender.stream, s.sendCmdCh)
+	err := s.runSendMessages(ctx, s.commandSender.stream, s.sendCmdCh)
 	log.Info("Command send stream closed",
 		zap.Any("messageCenterID", s.messageCenterID), zap.Any("remote", s.targetId), zap.Error(err))
 	s.commandSender.ready.Store(false)
@@ -344,13 +342,13 @@ func (s *remoteMessageTarget) runSendMessages(sendCtx context.Context, stream gr
 	}
 }
 
-func (s *remoteMessageTarget) runReceiveMessages(stream grpcReceiver, receiveCh chan *TargetMessage) {
+func (s *remoteMessageTarget) runReceiveMessages(ctx context.Context, stream grpcReceiver, receiveCh chan *TargetMessage) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		for {
 			select {
-			case <-s.ctx.Done():
+			case <-ctx.Done():
 				return
 			default:
 			}
@@ -412,86 +410,4 @@ func (s *remoteMessageTarget) newMessage(msg ...*TargetMessage) *proto.Message {
 		Payload: msgBytes,
 	}
 	return protoMsg
-}
-
-// localMessageTarget implements the SendMessageChannel interface.
-// It is used to send messages to the local server.
-// It simply pushes the messages to the messageCenter's channel directly.
-type localMessageTarget struct {
-	localId  node.ID
-	epoch    uint64
-	sequence atomic.Uint64
-
-	// The gather channel from the message center.
-	// We only need to push and pull the messages from those channel.
-	recvEventCh chan *TargetMessage
-	recvCmdCh   chan *TargetMessage
-
-	sendEventCounter   prometheus.Counter
-	dropMessageCounter prometheus.Counter
-	sendCmdCounter     prometheus.Counter
-}
-
-func (s *localMessageTarget) Epoch() uint64 {
-	return s.epoch
-}
-
-func (s *localMessageTarget) sendEvent(msg *TargetMessage) error {
-	err := s.sendMsgToChan(s.recvEventCh, msg)
-	if err != nil {
-		s.recordCongestedMessageError(msgTypeEvent)
-	} else {
-		s.sendEventCounter.Inc()
-	}
-	return err
-}
-
-func (s *localMessageTarget) sendCommand(msg *TargetMessage) error {
-	err := s.sendMsgToChan(s.recvCmdCh, msg)
-	if err != nil {
-		s.recordCongestedMessageError(msgTypeCommand)
-	} else {
-		s.sendCmdCounter.Inc()
-	}
-	return err
-}
-
-func newLocalMessageTarget(id node.ID,
-	gatherRecvEventChan chan *TargetMessage,
-	gatherRecvCmdChan chan *TargetMessage,
-) *localMessageTarget {
-	return &localMessageTarget{
-		localId:            id,
-		recvEventCh:        gatherRecvEventChan,
-		recvCmdCh:          gatherRecvCmdChan,
-		sendEventCounter:   metrics.MessagingSendMsgCounter.WithLabelValues("local", "event"),
-		dropMessageCounter: metrics.MessagingDropMsgCounter.WithLabelValues("local", "message"),
-		sendCmdCounter:     metrics.MessagingSendMsgCounter.WithLabelValues("local", "command"),
-	}
-}
-
-func (s *localMessageTarget) recordCongestedMessageError(typeE string) {
-	metrics.MessagingErrorCounter.WithLabelValues("local", typeE, "message_congested").Inc()
-}
-
-func (s *localMessageTarget) sendMsgToChan(ch chan *TargetMessage, msg ...*TargetMessage) error {
-	for i, m := range msg {
-		m.To = s.localId
-		m.From = s.localId
-		m.Epoch = s.epoch
-		m.Sequence = s.sequence.Add(1)
-		select {
-		case ch <- m:
-		default:
-			remains := len(msg) - i
-			s.dropMessageCounter.Add(float64(remains))
-			return AppError{Type: ErrorTypeMessageCongested, Reason: "Send message is congested"}
-		}
-	}
-	return nil
-}
-
-type sendStreamWrapper struct {
-	stream grpcSender
-	ready  atomic.Bool
 }

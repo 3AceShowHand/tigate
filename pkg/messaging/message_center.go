@@ -23,7 +23,7 @@ type MessageCenter interface {
 	MessageSender
 	MessageReceiver
 	// OnNodeChanges is called when the nodes in the cluster are changed. The message center should update the target list.
-	OnNodeChanges(map[node.ID]*node.Info)
+	OnNodeChanges(context.Context, map[node.ID]*node.Info)
 	Close()
 }
 
@@ -32,8 +32,8 @@ type MessageCenter interface {
 // If the message cannot be sent, the method will return an `ErrorTypeMessageCongested` error.
 type MessageSender interface {
 	// TODO: Make these methods support timeout later.
-	SendEvent(msg *TargetMessage) error
-	SendCommand(cmd *TargetMessage) error
+	SendEvent(ctx context.Context, msg *TargetMessage) error
+	SendCommand(ctx context.Context, cmd *TargetMessage) error
 }
 
 // MessageReceiver is the interface to receive messages from other targets.
@@ -133,7 +133,7 @@ func (mc *messageCenter) DeRegisterHandler(topic string) {
 	mc.router.deRegisterHandler(topic)
 }
 
-func (mc *messageCenter) OnNodeChanges(activeNode map[node.ID]*node.Info) {
+func (mc *messageCenter) OnNodeChanges(ctx context.Context, activeNode map[node.ID]*node.Info) {
 	allTarget := make(map[node.ID]bool)
 	allTarget[mc.id] = true
 	mc.remoteTargets.RLock()
@@ -144,7 +144,7 @@ func (mc *messageCenter) OnNodeChanges(activeNode map[node.ID]*node.Info) {
 
 	for id, info := range activeNode {
 		if _, ok := allTarget[id]; !ok {
-			mc.addTarget(info.ID, info.Epoch, info.AdvertiseAddr)
+			mc.addTarget(ctx, info.ID, info.Epoch, info.AdvertiseAddr)
 		}
 	}
 	for id, _ := range allTarget {
@@ -156,15 +156,15 @@ func (mc *messageCenter) OnNodeChanges(activeNode map[node.ID]*node.Info) {
 
 // AddTarget is called when a new remote target is discovered,
 // to add the target to the message center.
-func (mc *messageCenter) addTarget(id node.ID, epoch uint64, addr string) {
+func (mc *messageCenter) addTarget(ctx context.Context, id node.ID, epoch uint64, addr string) {
 	// If the target is the message center itself, we don't need to add it.
 	if id == mc.id {
 		log.Info("Add local target", zap.Stringer("id", id), zap.Any("epoch", epoch), zap.Any("addr", addr))
 		return
 	}
 	log.Info("Add remote target", zap.Stringer("local", mc.id), zap.Stringer("remote", id), zap.Any("epoch", epoch), zap.Any("addr", addr))
-	rt := mc.touchRemoteTarget(id, epoch, addr)
-	rt.connect()
+	rt := mc.touchRemoteTarget(ctx, id, epoch, addr)
+	rt.connect(ctx)
 }
 
 func (mc *messageCenter) removeTarget(id node.ID) {
@@ -177,13 +177,13 @@ func (mc *messageCenter) removeTarget(id node.ID) {
 	}
 }
 
-func (mc *messageCenter) SendEvent(msg *TargetMessage) error {
+func (mc *messageCenter) SendEvent(ctx context.Context, msg *TargetMessage) error {
 	if msg == nil {
 		return nil
 	}
 
 	if msg.To == mc.id {
-		return mc.localTarget.sendEvent(msg)
+		return mc.localTarget.sendEvent(ctx, msg)
 	}
 
 	mc.remoteTargets.RLock()
@@ -192,16 +192,16 @@ func (mc *messageCenter) SendEvent(msg *TargetMessage) error {
 	if !ok {
 		return apperror.AppError{Type: apperror.ErrorTypeTargetNotFound, Reason: fmt.Sprintf("Target %s not found", msg.To)}
 	}
-	return target.sendEvent(msg)
+	return target.sendEvent(ctx, msg)
 }
 
-func (mc *messageCenter) SendCommand(msg *TargetMessage) error {
+func (mc *messageCenter) SendCommand(ctx context.Context, msg *TargetMessage) error {
 	if msg == nil {
 		return nil
 	}
 
 	if msg.To == mc.id {
-		return mc.localTarget.sendCommand(msg)
+		return mc.localTarget.sendCommand(ctx, msg)
 	}
 
 	mc.remoteTargets.RLock()
@@ -210,7 +210,7 @@ func (mc *messageCenter) SendCommand(msg *TargetMessage) error {
 	if !ok {
 		return apperror.AppError{Type: apperror.ErrorTypeTargetNotFound, Reason: fmt.Sprintf("Target %s not found", msg.To)}
 	}
-	return target.sendCommand(msg)
+	return target.sendCommand(ctx, msg)
 }
 
 func (mc *messageCenter) ReceiveEvent() (*TargetMessage, error) {
@@ -239,7 +239,7 @@ func (mc *messageCenter) Close() {
 
 // touchRemoteTarget returns the remote target by the id,
 // if the target is not found, it will create a new one.
-func (mc *messageCenter) touchRemoteTarget(id node.ID, epoch uint64, addr string) *remoteMessageTarget {
+func (mc *messageCenter) touchRemoteTarget(ctx context.Context, id node.ID, epoch uint64, addr string) *remoteMessageTarget {
 	mc.remoteTargets.Lock()
 	defer mc.remoteTargets.Unlock()
 	if target, ok := mc.remoteTargets.m[id]; ok {
@@ -263,7 +263,7 @@ func (mc *messageCenter) touchRemoteTarget(id node.ID, epoch uint64, addr string
 		target.close()
 		delete(mc.remoteTargets.m, id)
 	}
-	rt := newRemoteMessageTarget(mc.id, id, mc.epoch, epoch, addr, mc.receiveEventCh, mc.receiveCmdCh, mc.cfg)
+	rt := newRemoteMessageTarget(ctx, mc.id, id, mc.epoch, epoch, addr, mc.receiveEventCh, mc.receiveCmdCh, mc.cfg)
 	mc.remoteTargets.m[id] = rt
 	return rt
 }
@@ -281,19 +281,19 @@ func NewMessageCenterServer(mc MessageCenter) proto.MessageCenterServer {
 }
 
 // SendEvents implements the gRPC service MessageCenter.SendEvents
-func (s *grpcServer) SendEvents(msg *proto.Message, stream proto.MessageCenter_SendEventsServer) error {
+func (s *grpcServer) SendEvents(ctx context.Context, msg *proto.Message, stream proto.MessageCenter_SendEventsServer) error {
 	metricsStreamGauge := metrics.MessagingStreamGauge.WithLabelValues(msg.GetFrom())
 	metricsStreamGauge.Inc()
 	defer metricsStreamGauge.Dec()
-	return s.handleConnect(msg, stream, true)
+	return s.handleConnect(ctx, msg, stream, true)
 	//return s.handleClientConnect(stream, true)
 }
 
 // SendCommands implements the gRPC service MessageCenter.SendCommands
-func (s *grpcServer) SendCommands(msg *proto.Message, stream proto.MessageCenter_SendCommandsServer) error {
+func (s *grpcServer) SendCommands(ctx context.Context, msg *proto.Message, stream proto.MessageCenter_SendCommandsServer) error {
 	metricsStreamGauge := metrics.MessagingStreamGauge.WithLabelValues(msg.GetFrom())
 	metricsStreamGauge.Inc()
-	return s.handleConnect(msg, stream, false)
+	return s.handleConnect(ctx, msg, stream, false)
 	//return s.handleClientConnect(stream, false)
 }
 
@@ -303,7 +303,7 @@ func (s *grpcServer) id() node.ID {
 
 // handleConnect registers the client as a target in the message center.
 // So the message center can receive messages from the client.
-func (s *grpcServer) handleConnect(msg *proto.Message, stream grpcSender, isEvent bool) error {
+func (s *grpcServer) handleConnect(ctx context.Context, msg *proto.Message, stream grpcSender, isEvent bool) error {
 	// The first message is an empty message without payload, to identify the client server id.
 	to := node.ID(msg.To)
 	if to != s.id() {
@@ -328,9 +328,9 @@ func (s *grpcServer) handleConnect(msg *proto.Message, stream grpcSender, isEven
 			return err
 		}
 		if isEvent {
-			return remoteTarget.runEventSendStream(stream)
+			return remoteTarget.runEventSendStream(ctx, stream)
 		} else {
-			return remoteTarget.runCommandSendStream(stream)
+			return remoteTarget.runCommandSendStream(ctx, stream)
 		}
 	} else {
 		log.Info("Remote target not found", zap.Any("messageCenter", s.messageCenter.id), zap.Any("remote", targetId))
