@@ -53,7 +53,7 @@ func TestMaintainerSchedulesNodeChanges(t *testing.T) {
 			{SchemaID: 1, TableID: 1}, {SchemaID: 1, TableID: 2}, {SchemaID: 1, TableID: 3}},
 	}
 	appcontext.SetService(appcontext.SchemaStore, store)
-	mc := messaging.NewMessageCenter(ctx, selfNode.ID, 0, config.NewDefaultMessageCenterConfig())
+	mc := messaging.NewMessageCenter(ctx, selfNode, config.NewDefaultMessageCenterConfig())
 	appcontext.SetService(appcontext.MessageCenter, mc)
 	startDispatcherNode(ctx, selfNode, mc, nodeManager)
 	nodeManager.RegisterNodeChangeHandler(appcontext.MessageCenter, mc.OnNodeChanges)
@@ -98,13 +98,13 @@ func TestMaintainerSchedulesNodeChanges(t *testing.T) {
 
 	// add 2 new node
 	node2 := node.NewInfo("127.0.0.1:8400", "")
-	mc2 := messaging.NewMessageCenter(ctx, node2.ID, 0, config.NewDefaultMessageCenterConfig())
+	mc2 := messaging.NewMessageCenter(ctx, node2, config.NewDefaultMessageCenterConfig())
 
 	node3 := node.NewInfo("127.0.0.1:8500", "")
-	mc3 := messaging.NewMessageCenter(ctx, node3.ID, 0, config.NewDefaultMessageCenterConfig())
+	mc3 := messaging.NewMessageCenter(ctx, node3, config.NewDefaultMessageCenterConfig())
 
 	node4 := node.NewInfo("127.0.0.1:8600", "")
-	mc4 := messaging.NewMessageCenter(ctx, node4.ID, 0, config.NewDefaultMessageCenterConfig())
+	mc4 := messaging.NewMessageCenter(ctx, node4, config.NewDefaultMessageCenterConfig())
 
 	startDispatcherNode(ctx, node2, mc2, nodeManager)
 	dn3 := startDispatcherNode(ctx, node3, mc3, nodeManager)
@@ -174,7 +174,7 @@ func TestMaintainerBootstrapWithTablesReported(t *testing.T) {
 			{SchemaID: 1, TableID: 1}, {SchemaID: 1, TableID: 2}, {SchemaID: 1, TableID: 3}},
 	}
 	appcontext.SetService(appcontext.SchemaStore, store)
-	mc := messaging.NewMessageCenter(ctx, selfNode.ID, 0, config.NewDefaultMessageCenterConfig())
+	mc := messaging.NewMessageCenter(ctx, selfNode, config.NewDefaultMessageCenterConfig())
 	appcontext.SetService(appcontext.MessageCenter, mc)
 	startDispatcherNode(ctx, selfNode, mc, nodeManager)
 	nodeManager.RegisterNodeChangeHandler(appcontext.MessageCenter, mc.OnNodeChanges)

@@ -210,9 +210,9 @@ func TestMaintainerSchedule(t *testing.T) {
 		t.Fatal(http.ListenAndServe(":8300", mux))
 	}()
 
-	n := node.NewInfo("", "")
-	appcontext.SetService(appcontext.MessageCenter, messaging.NewMessageCenter(ctx,
-		n.ID, 100, config.NewDefaultMessageCenterConfig()))
+	info := node.NewInfo("", "")
+	info.Epoch = 100
+	appcontext.SetService(appcontext.MessageCenter, messaging.NewMessageCenter(ctx, info, config.NewDefaultMessageCenterConfig()))
 	appcontext.SetService(watcher.NodeManagerName, watcher.NewNodeManager(nil, nil))
 	stream := dynstream.NewDynamicStream[string, *Event, *Maintainer](NewStreamHandler())
 	stream.Start()
@@ -233,7 +233,7 @@ func TestMaintainerSchedule(t *testing.T) {
 	taskScheduler := threadpool.NewThreadPoolDefault()
 	maintainer := NewMaintainer(cfID, &configNew.ChangeFeedInfo{
 		Config: configNew.GetDefaultReplicaConfig(),
-	}, n, stream, taskScheduler, nil, nil, 10)
+	}, info, stream, taskScheduler, nil, nil, 10)
 	_ = stream.AddPaths(dynstream.PathAndDest[string, *Maintainer]{
 		Path: cfID.ID,
 		Dest: maintainer,
@@ -265,7 +265,7 @@ func TestMaintainerSchedule(t *testing.T) {
 	}
 	// send bootstrap message
 	maintainer.sendMessages(maintainer.bootstrapper.HandleNewNodes(
-		[]*node.Info{n},
+		[]*node.Info{info},
 	))
 	// setup period event
 	SubmitScheduledEvent(maintainer.taskScheduler, maintainer.stream, &Event{
@@ -280,5 +280,5 @@ func TestMaintainerSchedule(t *testing.T) {
 	require.Equal(t, tableSize+1,
 		maintainer.scheduler.GetTaskSizeByState(scheduler.SchedulerStatusWorking))
 	require.Equal(t, tableSize+1,
-		maintainer.scheduler.GetTaskSizeByNodeID(n.ID))
+		maintainer.scheduler.GetTaskSizeByNodeID(info.ID))
 }

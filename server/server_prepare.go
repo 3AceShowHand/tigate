@@ -148,7 +148,7 @@ func (c *server) prepare(ctx context.Context) error {
 	c.info = node.NewInfo(conf.AdvertiseAddr, deployPath)
 	c.session = session
 
-	appcontext.SetService(appcontext.MessageCenter, messaging.NewMessageCenter(ctx, c.info.ID, c.info.Epoch, config.NewDefaultMessageCenterConfig()))
+	appcontext.SetService(appcontext.MessageCenter, messaging.NewMessageCenter(ctx, c.info, config.NewDefaultMessageCenterConfig()))
 	appcontext.SetService(appcontext.EventCollector, eventcollector.NewEventCollector(100*1024*1024*1024, c.info.ID)) // 100GB for demo
 	appcontext.SetService(appcontext.HeartbeatCollector, dispatchermanager.NewHeartBeatCollector(c.info.ID))
 

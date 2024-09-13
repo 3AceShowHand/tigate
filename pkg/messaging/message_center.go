@@ -87,15 +87,17 @@ type messageCenter struct {
 	cancel         context.CancelFunc
 }
 
-func NewMessageCenter(ctx context.Context, id node.ID, epoch uint64, cfg *config.MessageCenterConfig) *messageCenter {
+func NewMessageCenter(
+	ctx context.Context, info *node.Info, cfg *config.MessageCenterConfig,
+) *messageCenter {
 	receiveEventCh := make(chan *TargetMessage, cfg.CacheChannelSize)
 	receiveCmdCh := make(chan *TargetMessage, cfg.CacheChannelSize)
 	ctx, cancel := context.WithCancel(ctx)
 	mc := &messageCenter{
-		id:             id,
-		epoch:          epoch,
+		id:             info.ID,
+		epoch:          info.Epoch,
 		cfg:            cfg,
-		localTarget:    newLocalMessageTarget(id, receiveEventCh, receiveCmdCh),
+		localTarget:    newLocalMessageTarget(info.ID, receiveEventCh, receiveCmdCh),
 		receiveEventCh: receiveEventCh,
 		receiveCmdCh:   receiveCmdCh,
 		cancel:         cancel,
@@ -106,7 +108,7 @@ func NewMessageCenter(ctx context.Context, id node.ID, epoch uint64, cfg *config
 	mc.router.runDispatch(ctx, mc.wg, mc.receiveEventCh)
 	mc.router.runDispatch(ctx, mc.wg, mc.receiveCmdCh)
 	log.Info("create message center success, message router is running.",
-		zap.Stringer("id", id), zap.Any("epoch", epoch))
+		zap.Any("id", info.ID), zap.Any("epoch", info.Epoch))
 	return mc
 }
 

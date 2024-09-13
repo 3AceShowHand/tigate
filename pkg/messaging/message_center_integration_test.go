@@ -32,8 +32,10 @@ func newMessageCenterForTest(t *testing.T, timeout time.Duration) (*messageCente
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	mcConfig := config.NewDefaultMessageCenterConfig()
-	id := node.NewID()
-	mc := NewMessageCenter(ctx, id, epoch, mcConfig)
+
+	info := node.NewInfo("", "")
+	info.Epoch = epoch
+	mc := NewMessageCenter(ctx, info, mcConfig)
 	epoch++
 	mcs := NewMessageCenterServer(mc)
 	proto.RegisterMessageCenterServer(grpcServer, mcs)
