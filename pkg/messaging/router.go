@@ -2,16 +2,16 @@ package messaging
 
 import (
 	"context"
-	"sync"
-
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
+	"sync"
 )
 
 type MessageHandler func(ctx context.Context, msg *TargetMessage) error
 
 type router struct {
-	mu       sync.RWMutex
+	mu sync.RWMutex
+	// Topic -> message handler
 	handlers map[string]MessageHandler
 }
 
@@ -33,29 +33,25 @@ func (r *router) deRegisterHandler(topic string) {
 	delete(r.handlers, topic)
 }
 
-func (r *router) runDispatch(ctx context.Context, wg *sync.WaitGroup, out <-chan *TargetMessage) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				log.Info("router: close, since context done")
-				return
-			case msg := <-out:
-				r.mu.RLock()
-				handler, ok := r.handlers[msg.Topic]
-				r.mu.RUnlock()
-				if !ok {
-					// todo: is this possible to happens ?
-					log.Debug("no handler for message", zap.Any("msg", msg))
-					continue
-				}
-				err := handler(ctx, msg)
-				if err != nil {
-					log.Error("router: close, since handle message failed", zap.Error(err), zap.Any("msg", msg))
-				}
+func (r *router) runDispatch(ctx context.Context, out <-chan *TargetMessage) {
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("router: close, since context done")
+			return
+		case msg := <-out:
+			r.mu.RLock()
+			handler, ok := r.handlers[msg.Topic]
+			r.mu.RUnlock()
+			if !ok {
+				// todo: is this possible to happens ?
+				log.Debug("no handler for message", zap.Any("msg", msg))
+				continue
+			}
+			err := handler(ctx, msg)
+			if err != nil {
+				log.Error("router: close, since handle message failed", zap.Error(err), zap.Any("msg", msg))
 			}
 		}
-	}()
+	}
 }

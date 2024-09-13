@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/flowbehappy/tigate/pkg/node"
+	"golang.org/x/sync/errgroup"
 	"sync"
 
 	"github.com/flowbehappy/tigate/pkg/apperror"
@@ -83,8 +84,9 @@ type messageCenter struct {
 	// Messages from all targets are put into these channels.
 	receiveEventCh chan *TargetMessage
 	receiveCmdCh   chan *TargetMessage
-	wg             *sync.WaitGroup
-	cancel         context.CancelFunc
+
+	g      *errgroup.Group
+	cancel context.CancelFunc
 }
 
 func NewMessageCenter(
@@ -92,7 +94,10 @@ func NewMessageCenter(
 ) *messageCenter {
 	receiveEventCh := make(chan *TargetMessage, cfg.CacheChannelSize)
 	receiveCmdCh := make(chan *TargetMessage, cfg.CacheChannelSize)
+
 	ctx, cancel := context.WithCancel(ctx)
+	g, ctx := errgroup.WithContext(ctx)
+
 	mc := &messageCenter{
 		id:             info.ID,
 		epoch:          info.Epoch,
@@ -100,13 +105,21 @@ func NewMessageCenter(
 		localTarget:    newLocalMessageTarget(info.ID, receiveEventCh, receiveCmdCh),
 		receiveEventCh: receiveEventCh,
 		receiveCmdCh:   receiveCmdCh,
-		cancel:         cancel,
-		wg:             &sync.WaitGroup{},
-		router:         newRouter(),
+
+		g:      g,
+		cancel: cancel,
+		router: newRouter(),
 	}
 	mc.remoteTargets.m = make(map[node.ID]*remoteMessageTarget)
-	mc.router.runDispatch(ctx, mc.wg, mc.receiveEventCh)
-	mc.router.runDispatch(ctx, mc.wg, mc.receiveCmdCh)
+
+	g.Go(func() error {
+		mc.router.runDispatch(ctx, mc.receiveEventCh)
+		return nil
+	})
+	g.Go(func() error {
+		mc.router.runDispatch(ctx, mc.receiveCmdCh)
+		return nil
+	})
 	log.Info("create message center success, message router is running.",
 		zap.Any("id", info.ID), zap.Any("epoch", info.Epoch))
 	return mc
@@ -124,14 +137,14 @@ func (mc *messageCenter) OnNodeChanges(activeNode map[node.ID]*node.Info) {
 	allTarget := make(map[node.ID]bool)
 	allTarget[mc.id] = true
 	mc.remoteTargets.RLock()
-	for id, _ := range mc.remoteTargets.m {
+	for id := range mc.remoteTargets.m {
 		allTarget[id] = true
 	}
 	mc.remoteTargets.RUnlock()
 
-	for id, node := range activeNode {
+	for id, info := range activeNode {
 		if _, ok := allTarget[id]; !ok {
-			mc.addTarget(node.ID, node.Epoch, node.AdvertiseAddr)
+			mc.addTarget(info.ID, info.Epoch, info.AdvertiseAddr)
 		}
 	}
 	for id, _ := range allTarget {
@@ -221,7 +234,7 @@ func (mc *messageCenter) Close() {
 		mc.grpcServer.Stop()
 	}
 	mc.grpcServer = nil
-	mc.wg.Wait()
+	mc.g.Wait()
 }
 
 // touchRemoteTarget returns the remote target by the id,
