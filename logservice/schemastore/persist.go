@@ -250,10 +250,17 @@ func (p *persistentStorage) writeDDLEvent(ddlEvent DDLEvent) error {
 			ddlEvent.Job.BinlogInfo.FinishedTS,
 			ddlEvent.Job.SchemaID)
 		if err != nil {
-			return err
+			return errors.Trace(err)
 		}
-		batch.Set(ddlKey, ddlValue, pebble.NoSync)
-		return batch.Commit(pebble.NoSync)
+		err = batch.Set(ddlKey, ddlValue, pebble.NoSync)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		err = batch.Commit(pebble.NoSync)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		return nil
 	default:
 		// TODO: for cross table ddl, need write two events(may be we need a table_id -> name map?)
 		ddlKey, err := ddlJobTableKey(
@@ -263,13 +270,23 @@ func (p *persistentStorage) writeDDLEvent(ddlEvent DDLEvent) error {
 			return err
 		}
 
-		batch.Set(ddlKey, ddlValue, pebble.NoSync)
+		err = batch.Set(ddlKey, ddlValue, pebble.NoSync)
+		if err != nil {
+			return errors.Trace(err)
+		}
 		indexDDLKey, err := indexDDLJobKey(ddlEvent.Job.TableID, ddlEvent.Job.BinlogInfo.FinishedTS)
 		if err != nil {
-			return err
+			return errors.Trace(err)
 		}
-		batch.Set(indexDDLKey, nil, pebble.NoSync)
-		return batch.Commit(pebble.NoSync)
+		err = batch.Set(indexDDLKey, nil, pebble.NoSync)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		err = batch.Commit(pebble.NoSync)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		return nil
 	}
 }
 
@@ -307,7 +324,13 @@ func tryReadTableInfoFromSnapshot(
 	if err != nil {
 		log.Fatal("new iterator failed", zap.Error(err))
 	}
-	defer iter.Close()
+	//defer iter.Close()
+	defer func() {
+		err = iter.Close()
+		if err != nil {
+			log.Warn("failed to close the iterator", zap.Error(err))
+		}
+	}()
 	for iter.Last(); iter.Valid(); iter.Prev() {
 		_, version, schemaID, err := parseIndexSnapshotKey(iter.Key())
 		if err != nil {
@@ -356,7 +379,12 @@ func readDDLJobTimestampForTable(snap *pebble.Snapshot, tableID common.TableID, 
 	if err != nil {
 		log.Fatal("new iterator failed", zap.Error(err))
 	}
-	defer iter.Close()
+	defer func() {
+		err = iter.Close()
+		if err != nil {
+			log.Warn("failed to close the iterator", zap.Error(err))
+		}
+	}()
 	result := make([]common.Ts, 0)
 	for iter.First(); iter.Valid(); iter.Next() {
 		_, version, err := parseIndexDDLJobKey(iter.Key())
@@ -377,7 +405,12 @@ func (p *persistentStorage) buildVersionedTableInfoStore(
 ) error {
 	tableID := store.getTableID()
 	snap := p.db.NewSnapshot()
-	defer snap.Close()
+	defer func() {
+		err := snap.Close()
+		if err != nil {
+			log.Warn("failed to close the snapshot", zap.Error(err))
+		}
+	}()
 	tableInfoFromSnap, err := tryReadTableInfoFromSnapshot(snap, tableID, startTS, getSchemaName)
 	if err != nil {
 		return err
@@ -554,7 +587,10 @@ func writeTSToBatch(batch *pebble.Batch, key []byte, ts ...common.Ts) error {
 			return err
 		}
 	}
-	batch.Set(key, buf.Bytes(), pebble.NoSync)
+	err := batch.Set(key, buf.Bytes(), pebble.NoSync)
+	if err != nil {
+		return errors.Trace(err)
+	}
 	return nil
 }
 
@@ -610,7 +646,10 @@ func writeSchemaSnapshotToDisk(db *pebble.DB, tiStore kv.Storage, ts common.Ts) 
 		if err != nil {
 			log.Fatal("marshal schema failed", zap.Error(err))
 		}
-		batch.Set(schemaKey, schemaValue, pebble.NoSync)
+		err = batch.Set(schemaKey, schemaValue, pebble.NoSync)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
 		rawTables, err := meta.GetMetasByDBID(dbinfo.ID)
 		if err != nil {
 			log.Fatal("get tables failed", zap.Error(err))
@@ -629,12 +668,18 @@ func writeSchemaSnapshotToDisk(db *pebble.DB, tiStore kv.Storage, ts common.Ts) 
 			if err != nil {
 				log.Fatal("generate table key failed", zap.Error(err))
 			}
-			batch.Set(tableKey, rawTable.Value, pebble.NoSync)
+			err = batch.Set(tableKey, rawTable.Value, pebble.NoSync)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
 			indexKey, err := indexSnapshotKey(tbName.ID, ts, dbinfo.ID)
 			if err != nil {
 				log.Fatal("generate index key failed", zap.Error(err))
 			}
-			batch.Set(indexKey, nil, pebble.NoSync)
+			err = batch.Set(indexKey, nil, pebble.NoSync)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
 		}
 		if err := batch.Commit(pebble.NoSync); err != nil {
 			return nil, err
