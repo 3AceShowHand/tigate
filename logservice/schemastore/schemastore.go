@@ -128,8 +128,7 @@ func NewSchemaStore(
 		pdClock,
 		kvStorage,
 		metaTS.ResolvedTS,
-		s.writeDDLEvent,
-		s.advanceResolvedTs)
+		s.writeEvent)
 	log.Info("initialized",
 		zap.Uint64("finishedDDLTS", s.finishedDDLTS),
 		zap.Int64("schemaVersion", s.schemaVersion))
@@ -159,19 +158,21 @@ func (s *schemaStore) handleDDLEvents(events []DDLEvent) error {
 	s.mu.Lock()
 	defer s.mu.Lock()
 	for _, event := range events {
-		if event.Job.BinlogInfo.SchemaVersion <= s.schemaVersion || event.Job.BinlogInfo.FinishedTS <= s.finishedDDLTS {
+		schemaVersion := event.SchemaVersion()
+		finishedTs := event.FinishedTs()
+		if schemaVersion <= s.schemaVersion || finishedTs <= s.finishedDDLTS {
 			log.Info("skip already applied ddl job",
 				zap.String("job", event.Job.Query),
-				zap.Int64("jobSchemaVersion", event.Job.BinlogInfo.SchemaVersion),
-				zap.Uint64("jobFinishTs", event.Job.BinlogInfo.FinishedTS),
+				zap.Int64("jobSchemaVersion", schemaVersion),
+				zap.Uint64("jobFinishTs", finishedTs),
 				zap.Any("schemaVersion", s.schemaVersion),
 				zap.Uint64("finishedDDLTS", s.finishedDDLTS))
 			continue
 		}
 		log.Info("apply ddl job",
 			zap.String("job", event.Job.Query),
-			zap.Int64("jobSchemaVersion", event.Job.BinlogInfo.SchemaVersion),
-			zap.Uint64("jobFinishTs", event.Job.BinlogInfo.FinishedTS))
+			zap.Int64("jobSchemaVersion", schemaVersion),
+			zap.Uint64("jobFinishTs", finishedTs))
 		if err := handleResolvedDDLJob(event.Job, s.databaseMap, s.tableInfoStoreMap); err != nil {
 			log.Error("handle ddl job failed", zap.Error(err))
 			return errors.Trace(err)
@@ -198,22 +199,11 @@ func (s *schemaStore) batchCommitAndUpdateWatermark(ctx context.Context) error {
 		case data := <-s.eventCh:
 			switch v := data.(type) {
 			case DDLEvent:
-				// TODO: fix a better way to filter system tables
-				if v.Job.SchemaID == 1 {
-					continue
-				}
-				// log.Info("write ddl event",
-				// 	zap.String("schema", v.Job.SchemaName),
-				// 	zap.String("table", v.Job.TableName),
-				// 	zap.Uint64("startTs", v.Job.StartTS),
-				// 	zap.Uint64("finishedTs", v.Job.BinlogInfo.FinishedTS),
-				// 	zap.String("query", v.Job.Query))
-				s.unsortedCache.addDDLEvent(v)
+				s.addDDLEvent2Cache(v)
 			case common.Ts:
-				// TODO: check resolved ts is monotonically increasing
-				resolvedEvents := s.unsortedCache.fetchSortedDDLEventBeforeTS(v)
+				resolvedEvents := s.fetchDDLEventsBeforeTs(v)
 				if len(resolvedEvents) == 0 {
-					s.maxResolvedTS.Store(v)
+					s.updateResolvedTs(v)
 					continue
 				}
 				log.Info("schema store resolved ts",
@@ -221,9 +211,9 @@ func (s *schemaStore) batchCommitAndUpdateWatermark(ctx context.Context) error {
 					zap.Any("resolvedEventsLen", len(resolvedEvents)))
 				// TODO: whether the events is ordered by finishedDDLTS and schemaVersion
 				latestDDLEvent := resolvedEvents[len(resolvedEvents)-1]
-				latestFinishedTS := latestDDLEvent.Job.BinlogInfo.FinishedTS
-				latestSchemaVersion := latestDDLEvent.Job.Version
-				err := s.dataStorage.updateStoreMeta(v, latestFinishedTS, common.Ts(latestSchemaVersion))
+				latestFinishedTS := latestDDLEvent.FinishedTs()
+				latestSchemaVersion := latestDDLEvent.SchemaVersion()
+				err := s.updateStoreMeta(v, latestFinishedTS, common.Ts(latestSchemaVersion))
 				if err != nil {
 					log.Error("update ts to store meta failed",
 						zap.Uint64("latestFinishedTs", latestFinishedTS),
@@ -234,12 +224,37 @@ func (s *schemaStore) batchCommitAndUpdateWatermark(ctx context.Context) error {
 				if err = s.handleDDLEvents(resolvedEvents); err != nil {
 					return err
 				}
-				s.maxResolvedTS.Store(v)
+				s.updateResolvedTs(v)
 			default:
 				log.Fatal("unknown event type")
 			}
 		}
 	}
+}
+
+func (s *schemaStore) updateStoreMeta(ts, finishedTS common.Ts, schemaVersion common.Ts) error {
+	return s.dataStorage.updateStoreMeta(ts, finishedTS, schemaVersion)
+}
+
+func (s *schemaStore) fetchDDLEventsBeforeTs(ts common.Ts) []DDLEvent {
+	// TODO: check resolved ts is monotonically increasing
+	return s.unsortedCache.fetchSortedDDLEventBeforeTS(ts)
+}
+
+func (s *schemaStore) addDDLEvent2Cache(event DDLEvent) {
+	// TODO: fix a better way to filter system tables
+	if event.Job.SchemaID == 1 {
+		return
+	}
+	s.unsortedCache.addDDLEvent(event)
+}
+
+func (s *schemaStore) updateResolvedTs(v common.Ts) {
+	s.maxResolvedTS.Store(v)
+}
+
+func (s *schemaStore) loadResolvedTs() common.Ts {
+	return s.maxResolvedTS.Load()
 }
 
 func (s *schemaStore) GetAllPhysicalTables(snapTs common.Ts, f filter.Filter) ([]common.Table, error) {
@@ -427,7 +442,8 @@ func (s *schemaStore) GetMaxFinishedDDLTS() common.Ts {
 func (s *schemaStore) waitResolvedTs(tableID common.TableID, ts common.Ts) {
 	start := time.Now()
 	for {
-		if s.maxResolvedTS.Load() >= ts {
+		resolvedTs := s.loadResolvedTs()
+		if resolvedTs >= ts {
 			return
 		}
 		time.Sleep(time.Millisecond * 100)
@@ -435,7 +451,7 @@ func (s *schemaStore) waitResolvedTs(tableID common.TableID, ts common.Ts) {
 			log.Info("wait resolved ts slow",
 				zap.Int64("tableID", tableID),
 				zap.Any("ts", ts),
-				zap.Uint64("maxResolvedTS", s.maxResolvedTS.Load()),
+				zap.Uint64("maxResolvedTS", resolvedTs),
 				zap.Any("time", time.Since(start)))
 		}
 	}
@@ -458,25 +474,14 @@ func (s *schemaStore) GetNextDDLEvents(id common.TableID, start, end common.Ts) 
 }
 
 func (s *schemaStore) GetNextTableTriggerEvents(f filter.Filter, start common.Ts, limit int) ([]common.DDLEvent, common.Ts, error) {
-	return nil, s.maxResolvedTS.Load(), nil
+	return nil, s.loadResolvedTs(), nil
 }
 
-func (s *schemaStore) writeDDLEvent(ctx context.Context, ddlEvent DDLEvent) error {
-	// log.Info("write ddl event", zap.Any("ddlEvent", ddlEvent))
+func (s *schemaStore) writeEvent(ctx context.Context, event any) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case s.eventCh <- ddlEvent:
-	}
-	return nil
-}
-
-func (s *schemaStore) advanceResolvedTs(ctx context.Context, resolvedTs common.Ts) error {
-	// log.Info("advance resolved ts", zap.Any("resolvedTS", resolvedTs))
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case s.eventCh <- resolvedTs:
+	case s.eventCh <- event:
 	}
 	return nil
 }

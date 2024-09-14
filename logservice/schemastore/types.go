@@ -13,6 +13,14 @@ type DDLEvent struct {
 	CommitTS common.Ts `json:"commit_ts"`
 }
 
+func (e DDLEvent) FinishedTs() common.Ts {
+	return e.Job.BinlogInfo.FinishedTS
+}
+
+func (e DDLEvent) SchemaVersion() int64 {
+	return e.Job.BinlogInfo.SchemaVersion
+}
+
 type DispatcherInfo struct {
 	tableID common.TableID
 }

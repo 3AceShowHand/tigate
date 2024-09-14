@@ -36,8 +36,7 @@ import (
 type ddlJobFetcher struct {
 	puller *logpuller.LogPullerMultiSpan
 
-	writeDDLEvent     ddlEventHandler
-	advanceResolvedTs resolvedTsHandler
+	handler eventHandler
 
 	// ddlTableInfo is initialized when receive the first concurrent DDL job.
 	ddlTableInfo *mounter.DDLTableInfo
@@ -45,9 +44,7 @@ type ddlJobFetcher struct {
 	kvStorage kv.Storage
 }
 
-type ddlEventHandler func(ctx context.Context, ddlEvent DDLEvent) error
-
-type resolvedTsHandler func(ctx context.Context, resolvedTs common.Ts) error
+type eventHandler func(ctx context.Context, event any) error
 
 func newDDLJobFetcher(
 	pdCli pd.Client,
@@ -55,8 +52,7 @@ func newDDLJobFetcher(
 	pdClock pdutil.Clock,
 	kvStorage kv.Storage,
 	startTs common.Ts,
-	handler ddlEventHandler,
-	tsHandler resolvedTsHandler,
+	handler eventHandler,
 ) *ddlJobFetcher {
 	clientConfig := &logpuller.SubscriptionClientConfig{
 		RegionRequestWorkerPerStore:        1,
@@ -75,9 +71,8 @@ func newDDLJobFetcher(
 	)
 
 	ddlJobFetcher := &ddlJobFetcher{
-		writeDDLEvent:     handler,
-		advanceResolvedTs: tsHandler,
-		kvStorage:         kvStorage,
+		handler:   handler,
+		kvStorage: kvStorage,
 	}
 	ddlSpans := getAllDDLSpan()
 	ddlJobFetcher.puller = logpuller.NewLogPullerMultiSpan(client, pdClock, ddlSpans, startTs, ddlJobFetcher.input)
@@ -98,7 +93,7 @@ func (p *ddlJobFetcher) input(ctx context.Context, rawEvent *common.RawKVEntry) 
 	}
 
 	if rawEvent.IsResolved() {
-		err := p.advanceResolvedTs(ctx, rawEvent.CRTs)
+		err := p.handler(ctx, rawEvent.CRTs)
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -114,7 +109,7 @@ func (p *ddlJobFetcher) input(ctx context.Context, rawEvent *common.RawKVEntry) 
 		return nil
 	}
 
-	err = p.writeDDLEvent(ctx, DDLEvent{
+	err = p.handler(ctx, DDLEvent{
 		Job:      job,
 		CommitTS: rawEvent.CRTs,
 	})
